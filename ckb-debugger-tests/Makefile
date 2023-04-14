@@ -1,6 +1,6 @@
 
 
-all: always-success cl-always-success cl-always-success-info-cell
+all: always-success cl-always-success cl-always-success-info-cell child-script-success child-script-multisig-success
 
 
 always-success:
@@ -17,4 +17,8 @@ cl-always-success-info-cell:
 
 child-script-success:
 	cargo run --bin child-script-success > tx.json
+	RUST_LOG=debug ckb-debugger --tx-file=tx.json --script-group-type=lock --cell-index=0 --cell-type=input
+
+child-script-multisig-success:
+	cargo run --bin child-script-multisig-success > tx.json
 	RUST_LOG=debug ckb-debugger --tx-file=tx.json --script-group-type=lock --cell-index=0 --cell-type=input
