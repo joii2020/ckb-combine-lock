@@ -14,13 +14,14 @@ use anyhow;
 use anyhow::Context;
 use blockchain::Bytes as BlockchainBytes;
 use blockchain::WitnessArgs;
+use ckb_hash::new_blake2b;
 use ckb_types::core::ScriptHashType;
 use ckb_types::packed;
 use ckb_types::prelude::*;
 use combine_lock_mol::{ChildScript, ChildScriptVec, CombineLockWitness, Uint16};
 use molecule::bytes::Bytes;
 use molecule::prelude::*;
-use std::{fs::read_to_string, path::PathBuf};
+use std::{collections::HashSet, fs::read_to_string, path::PathBuf};
 
 use ckb_debugger_api::embed::Embed;
 use ckb_mock_tx_types::{MockTransaction, ReprMockTransaction};
@@ -94,13 +95,61 @@ impl From<packed::Script> for ChildScript {
     }
 }
 
+// Now, only support lock script
+fn get_index_by_group_index(group_index: usize, tx: &MockTransaction) -> Vec<usize> {
+    let mut r = Vec::<usize>::new();
+
+    let repr_tx: ReprMockTransaction = tx.clone().into();
+    let mut group_index = group_index;
+    let mut hash_buf = HashSet::<[u8; 32]>::new();
+
+    let mut cur_script_hash: Option<[u8; 32]> = None;
+
+    for i in 0..repr_tx.mock_info.inputs.len() {
+        let input_cell = repr_tx.mock_info.inputs.get(i).unwrap();
+        let msg = {
+            let script = &input_cell.output.lock;
+
+            let mut ctx = new_blake2b();
+            ctx.update(script.code_hash.as_bytes());
+            ctx.update(script.args.as_bytes());
+            ctx.update(&[script.hash_type.clone() as u8]);
+            let mut msg = [0u8; 32];
+            ctx.finalize(&mut msg);
+            msg
+        };
+
+        if group_index == 0 {
+            if cur_script_hash.is_none() {
+                cur_script_hash = Some(msg.clone());
+                r.push(i);
+            } else {
+                if cur_script_hash.eq(&Some(msg.clone())) {
+                    r.push(i);
+                }
+            }
+        } else if hash_buf.get(&msg).is_none() {
+            hash_buf.insert(msg.clone());
+            group_index -= 1;
+        }
+    }
+
+    r
+}
+
 pub fn generate_sighash_all(
     tx: &MockTransaction,
-    lock_index: usize,
+    group_index: usize,
 ) -> Result<[u8; 32], anyhow::Error> {
+    let lock_indexs = get_index_by_group_index(group_index, tx);
+
     let zero_extra_witness = {
         let mut buf = Vec::new();
-        let witness = tx.tx.witnesses().get(lock_index).expect("index:0 witness");
+        let witness = tx
+            .tx
+            .witnesses()
+            .get(lock_indexs[0])
+            .expect("index:0 witness");
         buf.resize(witness.len() - 20, 0);
         buf
     };
@@ -109,22 +158,36 @@ pub fn generate_sighash_all(
         .lock(Some(Bytes::from(zero_extra_witness)).pack())
         .build();
 
-    let mut blake2b = ckb_hash::new_blake2b();
+    let mut blake2b = new_blake2b();
     let mut message = [0u8; 32];
 
     let tx_hash = tx.tx.calc_tx_hash();
     blake2b.update(&tx_hash.raw_data());
+    // println!("--hash: {:02X?}", &tx_hash.raw_data().to_vec());
     let witness_data = witness_args.as_bytes();
     blake2b.update(&(witness_data.len() as u64).to_le_bytes());
+    // println!(
+    //     "--hash: {:02X?}",
+    //     &(witness_data.len() as u64).to_le_bytes()
+    // );
     blake2b.update(&witness_data);
+    // println!("--hash: {:02X?}", &witness_data.to_vec());
+
+    // group
+    if lock_indexs.len() > 1 {
+        for i in 1..lock_indexs.len() {}
+    }
 
     // for...
-    ((lock_index + 1)..(lock_index + tx.mock_info.inputs.len())).for_each(|n| {
-        let witness = tx.tx.witnesses().get(n).unwrap();
-        let witness_len = witness.raw_data().len() as u64;
-        blake2b.update(&witness_len.to_le_bytes());
-        blake2b.update(&witness.raw_data());
-    });
+    // ((lock_indexs[0] + 1)..(lock_indexs[0] + tx.mock_info.inputs.len())).for_each(|n| {
+    //     let witness = tx.tx.witnesses().get(n).unwrap();
+    //     let witness_len = witness.raw_data().len() as u64;
+    //     blake2b.update(&witness_len.to_le_bytes());
+    //     // println!("--hash: {:02X?}", &witness_len.to_le_bytes());
+
+    //     blake2b.update(&witness.raw_data());
+    //     // println!("--hash: {:02X?}", &witness.raw_data().to_vec());
+    // });
 
     blake2b.finalize(&mut message);
     Ok(message)
