@@ -94,10 +94,13 @@ impl From<packed::Script> for ChildScript {
     }
 }
 
-pub fn generate_sighash_all(tx: &MockTransaction) -> Result<[u8; 32], anyhow::Error> {
+pub fn generate_sighash_all(
+    tx: &MockTransaction,
+    lock_index: usize,
+) -> Result<[u8; 32], anyhow::Error> {
     let zero_extra_witness = {
         let mut buf = Vec::new();
-        let witness = tx.tx.witnesses().get(0).expect("index:0 witness");
+        let witness = tx.tx.witnesses().get(lock_index).expect("index:0 witness");
         buf.resize(witness.len() - 20, 0);
         buf
     };
@@ -116,6 +119,12 @@ pub fn generate_sighash_all(tx: &MockTransaction) -> Result<[u8; 32], anyhow::Er
     blake2b.update(&witness_data);
 
     // for...
+    ((lock_index + 1)..(lock_index + tx.mock_info.inputs.len())).for_each(|n| {
+        let witness = tx.tx.witnesses().get(n).unwrap();
+        let witness_len = witness.raw_data().len() as u64;
+        blake2b.update(&witness_len.to_le_bytes());
+        blake2b.update(&witness.raw_data());
+    });
 
     blake2b.finalize(&mut message);
     Ok(message)
